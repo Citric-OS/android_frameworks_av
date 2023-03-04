@@ -1899,6 +1899,7 @@ void CCodec::stop() {
         comp = state->comp;
     }
     status_t err = comp->stop();
+    mChannel->stopUseOutputSurface();
     if (err != C2_OK) {
         // TODO: convert err into status_t
         mCallback->onError(UNKNOWN_ERROR, ACTION_CODE_FATAL);
@@ -1992,6 +1993,7 @@ void CCodec::release(bool sendCallback) {
         comp = state->comp;
     }
     comp->release();
+    mChannel->stopUseOutputSurface();
 
     {
         Mutexed<State>::Locked state(mState);
@@ -2139,11 +2141,12 @@ void CCodec::signalResume() {
 
     std::map<size_t, sp<MediaCodecBuffer>> clientInputBuffers;
     status_t err = mChannel->prepareInitialInputBuffers(&clientInputBuffers);
-    if (err != OK) {
+    // FIXME(b/237656746)
+    if (err != OK && err != NO_MEMORY) {
         if (err == WOULD_BLOCK) {
             return;
         }
-        ALOGW("Resume request for Input Buffers failed");
+        ALOGE("Resume request for Input Buffers failed");
         mCallback->onError(err, ACTION_CODE_FATAL);
         return;
     }
@@ -2544,17 +2547,6 @@ status_t CCodec::configureTunneledVideoPlayback(
 }
 
 void CCodec::initiateReleaseIfStuck() {
-    std::string name;
-    bool pendingDeadline = false;
-    {
-        Mutexed<NamedTimePoint>::Locked deadline(mDeadline);
-        if (deadline->get() < std::chrono::steady_clock::now()) {
-            name = deadline->getName();
-        }
-        if (deadline->get() != TimePoint::max()) {
-            pendingDeadline = true;
-        }
-    }
     bool tunneled = false;
     bool isMediaTypeKnown = false;
     {
@@ -2591,6 +2583,17 @@ void CCodec::initiateReleaseIfStuck() {
         const std::unique_ptr<Config> &config = *configLocked;
         tunneled = config->mTunneled;
         isMediaTypeKnown = (kKnownMediaTypes.count(config->mCodingMediaType) != 0);
+    }
+    std::string name;
+    bool pendingDeadline = false;
+    {
+        Mutexed<NamedTimePoint>::Locked deadline(mDeadline);
+        if (deadline->get() < std::chrono::steady_clock::now()) {
+            name = deadline->getName();
+        }
+        if (deadline->get() != TimePoint::max()) {
+            pendingDeadline = true;
+        }
     }
     if (!tunneled && isMediaTypeKnown && name.empty()) {
         constexpr std::chrono::steady_clock::duration kWorkDurationThreshold = 3s;
